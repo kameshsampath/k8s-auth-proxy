@@ -15,12 +15,12 @@
  */
 package org.workspace7.k8s.auth.proxy;
 
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.http.*;
-import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.JksOptions;
 import io.vertx.core.net.PemKeyCertOptions;
@@ -29,13 +29,14 @@ import io.vertx.ext.auth.oauth2.OAuth2ClientOptions;
 import io.vertx.ext.auth.oauth2.OAuth2FlowType;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.OAuth2AuthHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
 /**
- * TODO handle HTTPS
+ *
  */
 public class K8sWebProxyVerticle extends AbstractVerticle {
 
@@ -43,11 +44,15 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
     private static final String AUTHORIZATION_HEADER = "Authorization";
     private static final String BEARER_FORMAT = "Bearer %s";
 
+    private HttpClient k8HttpClient;
+
     @Override
     public void start(Future<Void> startFuture) throws Exception {
 
+        k8HttpClient = vertx.createHttpClient(apiServerClientOptions());
+
         setup((keyCloakOAuth2) -> startWebApp(keyCloakOAuth2,
-                (http) -> completeStatup(http, startFuture))
+                (http) -> completeStartup(http, startFuture))
                 , startFuture);
     }
 
@@ -68,16 +73,18 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
             OAuth2AuthHandler keycloakOAuthHandler = OAuth2AuthHandler.create(keyCloakOAuth2.result(), proxyUri);
             keycloakOAuthHandler.setupCallback(router.get("/callback"));
 
+            //router.route().handler(BodyHandler.create());
+
             router.route("/api/*").handler(keycloakOAuthHandler);
+            router.route("/ui/*").handler(keycloakOAuthHandler);
 
             //Handle UI Requests
-            router.route("/api/ui/").handler(this::handleUIPath);
+            router.route("/ui/").handler(this::handleUIPath);
 
             //Handle API Requests
-            router.route("/api/").handler(this::handleApiPath);
+            router.route("/api/*").handler(this::handleApiPath);
 
-            //TODO - do we redirect it to /api/ui or api ?
-            router.get("/").handler(ctx -> ctx.reroute("/api"));
+            router.get("/").handler(ctx -> ctx.reroute("/ui/"));
 
             //These options are for setting up the server (k8s-proxy)
             HttpServerOptions httpServerOptions = new HttpServerOptions().setSsl(true);
@@ -97,10 +104,11 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
 
     @Override
     public void stop(Future<Void> stopFuture) throws Exception {
+        k8HttpClient.close();
         stopFuture.complete();
     }
 
-    protected void completeStatup(AsyncResult<HttpServer> httpServer, Future<Void> future) {
+    protected void completeStartup(AsyncResult<HttpServer> httpServer, Future<Void> future) {
         if (httpServer.succeeded()) {
             _logger.info("Successfully started Proxy Server");
             future.complete();
@@ -111,7 +119,7 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
     }
 
     /**
-     * TODO documentation and better exception handling
+     *
      *
      * @param routingContext
      */
@@ -126,47 +134,54 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
         final String accessToken = userPrincipal.getString("id_token");
         final String authHeader = String.format(BEARER_FORMAT, accessToken);
 
-        _logger.debug("Proxying Request to K8s Master :{} with method {}",
+        _logger.debug("API: Proxying Request to K8s Master :{} with method {}",
                 request.uri(), request.method());
-
-        HttpClient k8HttpClient = vertx.createHttpClient(apiServerClientOptions());
 
         //Proxying request to Kubernetes Master
         HttpClientRequest k8sClientRequest = k8HttpClient.request(request.method(),
-                config().getInteger("k8s_master_port"),
-                config().getString("k8s_master_host"),
-                request.uri(), k8sApiResp -> {
-                    k8sApiResp.exceptionHandler(event -> {
-                        _logger.error("Error while calling Kubernetes :", event.getCause());
-                    });
+                request.uri());
 
-                    response.setChunked(true);
-                    response.setStatusCode(k8sApiResp.statusCode());
-                    response.headers().setAll(k8sApiResp.headers());
-                    k8sApiResp.handler(data -> {
-                        _logger.debug("Proxying Resp Body:{}", data.toString());
-                        response.write(data);
-                    });
+        k8sClientRequest.handler(k8sApiResp -> {
 
-                    k8sApiResp.endHandler((v) -> response.end());
-                });
+            k8sApiResp.exceptionHandler(event -> {
+                _logger.error("Error while calling Kubernetes :", event.getCause());
+                //TODO clear headers for security
+                response.setStatusCode(503).end();
+                k8sClientRequest.end();
+            });
+
+            response.setChunked(true);
+            response.setStatusCode(k8sApiResp.statusCode());
+            //TODO clear headers for security
+            response.headers().setAll(k8sApiResp.headers());
+
+            k8sApiResp.handler(data -> {
+                _logger.debug("Proxying Resp Body:{}", data.toString());
+                response.write(data);
+            });
+
+            k8sApiResp.endHandler((v) -> {
+                response.end();
+                k8sClientRequest.end();
+            });
+        });
 
         k8sClientRequest.setChunked(true);
         //Add Required Headers to k8s
         k8sClientRequest.headers().set(AUTHORIZATION_HEADER, authHeader);
 
-        request.handler(data -> k8sClientRequest.write(Json.encodePrettily(data)));
+        request.handler(data -> k8sClientRequest.write(data));
 
         k8sClientRequest.exceptionHandler(ex -> {
             _logger.error("Error while calling Kubernetes API", ex);
+            //TODO clear headers for security
             response.setStatusCode(503).end();
         });
 
-        k8sClientRequest.end();
     }
 
     /**
-     * TODO: Doc and better exception handling
+     *
      *
      * @param routingContext
      */
@@ -181,19 +196,39 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
         final String accessToken = userPrincipal.getString("id_token");
         final String authHeader = String.format(BEARER_FORMAT, accessToken);
 
-        _logger.debug("Proxying Request to K8s Master :{} with method {}",
-                request.uri(), request.method());
+        _logger.debug("UI: Proxying Request to K8s Master :{} with method {}",
+                "/swaggerui", request.method());
 
-        HttpClient k8HttpClient = vertx.createHttpClient(apiServerClientOptions());
+        HttpClientRequest k8sClientRequest = k8HttpClient.request(request.method(),
+                "/swaggerui");
 
-        HttpClientRequest k8sClientRequest = k8HttpClient.get(config().getInteger("k8s_master_port"),
-                config().getString("k8s_master_host"),"/swaggerui");
-        k8sClientRequest.headers().set(AUTHORIZATION_HEADER, authHeader);
+        k8sClientRequest.handler(resp -> {
+
+            final int statusCode = resp.statusCode();
+            final String location = resp.getHeader("location");
+
+            _logger.info("Status Code: {}  and Location:{} ",statusCode,location);
+
+            if (statusCode == HttpResponseStatus.MOVED_PERMANENTLY.code()
+                    || statusCode == HttpResponseStatus.FOUND.code()
+                    || statusCode == HttpResponseStatus.SEE_OTHER.code()
+                    || statusCode == HttpResponseStatus.TEMPORARY_REDIRECT.code()) {
+
+                _logger.debug("Redirect detected with location :{}" + location);
+
+                response.setStatusCode(statusCode)
+                        .end();
+            }
+        });
 
         k8sClientRequest.exceptionHandler(ex -> {
             _logger.error("Error while calling Kubernetes API", ex);
             response.setStatusCode(503).end();
         });
+
+        k8sClientRequest.setChunked(true);
+        //Add Required Headers to k8s
+        k8sClientRequest.headers().set(AUTHORIZATION_HEADER, authHeader);
 
     }
 
@@ -267,7 +302,10 @@ public class K8sWebProxyVerticle extends AbstractVerticle {
     }
 
     private HttpClientOptions apiServerClientOptions() {
-        return new HttpClientOptions().setSsl(true).setTrustStoreOptions(apiServerTrustOptions());
+        return new HttpClientOptions().setSsl(true)
+                .setTrustStoreOptions(apiServerTrustOptions())
+                .setDefaultHost(config().getString("k8s_master_host"))
+                .setDefaultPort(config().getInteger("k8s_master_port"));
     }
 
 }
