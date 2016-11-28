@@ -1,0 +1,21 @@
+{
+  "k8s_proxy_host": "192.168.64.1.nip.io",
+  "k8s_master_uri": " https://192.168.64.9:8443",
+  "k8s_master_host": "192.168.64.9",
+  "k8s_master_port": 8443,
+  "k8s_proxy_port": 8443,
+  "cert-path": "/Users/kameshs/certs/gokulam-cert.pem",
+  "key-path": "/Users/kameshs/certs/gokulam.key",
+  "keystore-path": "/Users/kameshs/certs/gokulam.jks",
+  "keystore-password": "password",
+  "k8s_apiserver_keystore-path": "/Users/kameshs/certs/minikube.jks",
+  "k8s_apiserver_keystore-password": "password",
+  "realm": "kubernetes",
+  "realm-public-key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtkjCujLz0UcxX9UeOQXrN5tFwVYhfvGnDr3tsQ3KY2zvLJ+97qD6eXJZpJaDRebgjr/xe8KUkiih9BM0j4QIX2yVfv+SFUh4ioC8rqZdmM66LPXrIs5mmsgbdrtWUUyh4eDoYhCny5P2IsL22Lf8xDrVnBUuVHkLvyFFB7VU5MGQESqI4Ta8H6j+LY/4KZ8cIyBhRboqmMdsIuePK+JDh/Qy0Abk4h4oTOk+8lNmRmiLQf0iebJyNEqLZvEMZq4M8NaPNjt7Fi/yd/RADwI53+F0ErVgvxMjKzVRXwpqpZnHug5oDIE1SjrysvbzzC4PLPth4iP3SytYHgrjVinb9QIDAQAB",
+  "auth-server-url": "https://192.168.64.1.nip.io/auth",
+  "ssl-required": "external",
+  "resource": "apiserver-proxy",
+  "credentials": {
+    "secret": "8f462f5c-daf9-4331-9e6b-65f05b5af9f6"
+  }
+}
